@@ -1,0 +1,13 @@
+alertmanager:
+  alertmanagerSpec:
+    # Pick only AlertmanagerConfigs labeled with release=monitoring
+    alertmanagerConfigSelector:
+      matchLabels:
+        release: monitoring
+
+    # Run 2 replicas for HA
+    replicas: 2
+
+    # Don’t restrict by namespace matcher
+    alertmanagerConfigMatcherStrategy:
+      type: None
