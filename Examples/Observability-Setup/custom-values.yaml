@@ -19,3 +19,13 @@ alertmanager:
     # Don’t restrict by namespace matcher
     alertmanagerConfigMatcherStrategy:
       type: None
+
+grafana:
+  adminPassword: "admin"
+
+  grafana.ini:
+    server:
+      root_url: "http://monitoring.suribabudevops.shop/grafana/"
+
+  env:
+    GF_SERVER_SERVE_FROM_SUB_PATH: "true"
