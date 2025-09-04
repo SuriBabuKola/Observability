@@ -1,5 +1,13 @@
+prometheus:
+  prometheusSpec:
+    externalUrl: "http://a260da0b1f0824b70a17c172c197380a-698400119.us-east-1.elb.amazonaws.com/prometheus"
+    routePrefix: "/prometheus"
+
 alertmanager:
   alertmanagerSpec:
+    externalUrl: "http://a260da0b1f0824b70a17c172c197380a-698400119.us-east-1.elb.amazonaws.com/alertmanager"
+    routePrefix: "/alertmanager"
+
     # Pick only AlertmanagerConfigs labeled with release=monitoring
     alertmanagerConfigSelector:
       matchLabels:
