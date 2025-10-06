@@ -830,6 +830,7 @@
   ```
 * The pod will restart → Prometheus detects it → Alertmanager sends an **email notification**.
 * You should receive an email once the application container has restarted at least 3 times.
+  ![preview](./Images/Observability09.png)
 
 ---
 
@@ -853,3 +854,133 @@
 6. **Test Alerts**
    * Crash container to trigger `PodRestart` alert.
    * Verify email notification.
+
+---
+
+## Logging
+* Logs are messages written by developers to help end users understand what the application is doing at a particular time.
+* Logging is essential in **distributed systems** and **Kubernetes** for monitoring applications, debugging issues, auditing, and ensuring the smooth operation of microservices.
+* **Importance:**
+  * **Debugging**: Helps understand why applications misbehave.
+  * **Auditing**: Provides a trail of actions taken in the system.
+  * **Performance Monitoring**: Detects bottlenecks via log analysis.
+  * **Security**: Identifies unauthorized access or malicious activities.
+* **Logging Tools in Kubernetes:**
+  * **EFK Stack**: Elasticsearch + Fluentbit + Kibana
+  * **ELK Stack**: Elasticsearch + Logstash + Kibana
+  * **Promtail + Loki + Grafana**: A lightweight alternative
+
+---
+
+## EFK Stack
+* **Elasticsearch (E):**
+  * A database for storing and indexing logs.
+  * Supports persistence via volumes (e.g., EBS in AWS).
+  * Stores logs forwarded from Fluentbit.
+* **Fluentbit (F):**
+  * Lightweight log forwarder deployed as a **DaemonSet** in K8s.
+  * Reads container logs from all nodes and sends them to Elasticsearch.
+  * Configurable with:
+    1. **Service**: Expose Fluentbit (NodePort/LoadBalancer) and enable features.
+    2. **Input**: Source of logs (e.g., container logs).
+    3. **Filter**: Modify/filter logs (e.g., ignore certain namespaces).
+    4. **Output**: Destination for logs (Elasticsearch in this case).
+* **Kibana (K):**
+  * Dashboard for visualizing logs stored in Elasticsearch.
+  * Provides search, filtering, and analytics capabilities.
+### Architecture Flow
+* Application Pods → Fluentbit → Elasticsearch → Kibana Dashboard
+  * **Fluentbit** collects logs from Pods.
+  * **Elasticsearch** stores and indexes logs.
+  * **Kibana** visualizes logs for analysis.
+
+---
+
+## Deployment Steps of EFK in Kubernetes
+#### 1. Create IAM Role for Service Account
+* Required for Fluentbit or Elasticsearch to interact with **AWS resources** (e.g., EBS).
+  ```bash
+  eksctl create iamserviceaccount \
+      --name ebs-csi-controller-sa \
+      --namespace kube-system \
+      --cluster observability \
+      --role-name AmazonEKS_EBS_CSI_DriverRole \
+      --role-only \
+      --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy \
+      --approve
+  ```
+  * Elasticsearch runs as a StatefulSet and is mounted to EBS volumes.
+  * Since the EKS cluster is external to EBS, communication between Elasticsearch and EBS volumes is required.
+  * To enable this, the Service Account of Elasticsearch is mapped to an IAM role.
+  * This IAM role is granted permissions to interact with EBS volumes.
+  * The EBS CSI driver is used to facilitate the creation and management of EBS volumes, ensuring seamless integration with the EKS cluster.
+#### 2. Retrieve IAM Role ARN
+* This command retrieves the IAM Role ARN and stores it in a variable named `ARN`:
+  ```bash
+  ARN=$(aws iam get-role --role-name AmazonEKS_EBS_CSI_DriverRole --query 'Role.Arn' --output text)
+  ```
+#### 3. Deploy AWS EBS CSI Driver
+* This command deploys the AWS EBS CSI Driver, enabling Elasticsearch to securely store logs on EBS volumes:
+  ```bash
+  eksctl create addon --cluster observability --name aws-ebs-csi-driver --version latest \
+      --service-account-role-arn $ARN --force
+  ```
+#### 4. Create Namespace for Logging
+* Create a namespace `logging`:
+  ```bash
+  kubectl create namespace logging
+  ```
+
+#### 5. Install Elasticsearch
+* Install Elasticsearch using Helm:
+  ```bash
+  helm repo add elastic https://helm.elastic.co
+  helm install elasticsearch \
+    --set replicas=1 \
+    --set volumeClaimTemplate.storageClassName=gp2 \
+    --set persistence.labels.enabled=true elastic/elasticsearch -n logging
+  ```
+#### 6. Retrieve Elasticsearch Credentials
+* After installing Elasticsearch, retrieve the Elasticsearch username and password.
+* Fluentbit forwards logs to Elasticsearch, which requires authentication. When deploying Fluentbit, include the Elasticsearch username and password in its configuration.
+  ```bash
+  # Username
+  kubectl get secrets --namespace=logging elasticsearch-master-credentials -ojsonpath='{.data.username}' | base64 -d
+
+  # Password
+  kubectl get secrets --namespace=logging elasticsearch-master-credentials -ojsonpath='{.data.password}' | base64 -d
+  ```
+#### 7. Install Kibana
+* Install Kibana using Helm:
+  ```bash
+  helm install kibana --set service.type=LoadBalancer elastic/kibana -n logging
+  ```
+#### 8. Install Fluentbit
+* [Refer Here](https://github.com/SuriBabuKola/Observability/commit/3076c951c8a7737980fc250315c03e2cfffc282a) for Fluentbit configuration file.
+* Update Fluentbit configuration file (`fluentbit-values.yaml`) with **Elasticsearch username and password**.
+  ```bash
+  helm repo add fluent https://fluent.github.io/helm-charts
+  helm install fluent-bit fluent/fluent-bit -f fluentbit-values.yaml -n logging
+  ```
+  * **Fluentbit Configuration (`fluentbit-values.yaml`):** It has four primary sections
+    1. **Service:** Defines Fluentbit's runtime settings, such as flush intervals and log levels.
+    2. **Input:** Specifies the log sources, such as container logs from Kubernetes nodes.
+    3. **Filter:** Processes and modifies logs, including filtering by namespace or applying custom rules.
+    4. **Output:** Configures the destination for logs, such as Elasticsearch, including authentication details.
+### Verification
+* **Check Pods & Services** in the `logging` namespace.
+* **Access Kibana**: `http://<LoadBalancer_DNS>:5601`
+* **Testing**:
+  * Deploy your application.
+  * Check logs of Fluentbit & Application Pods via `kubectl`:
+    ```bash
+    kubectl logs <pod_name> -n <namespace>
+    ```
+    * Fluentbit logs confirm the collection of logs from pods.
+    * Application logs show the expected messages/events.
+  * Fluentbit forwards logs to Elasticsearch → logs are visible in Kibana.
+* Go to **Discover** in Kibana and **Create a Data View**:
+  1. Provide a **Name**.
+  2. Provide an **Index Pattern** (matches logs from Fluentbit/Elasticsearch).
+  3. Save and explore logs.
+  ![preview](./Images/Observability10.png)
