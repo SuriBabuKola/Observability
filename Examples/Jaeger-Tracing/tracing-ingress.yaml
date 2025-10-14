@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tracing-ingress
+  namespace: tracing
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: a29af5d0c9bcd490fb8e93759bfb1201-579854440.us-east-1.elb.amazonaws.com
+    http:
+      paths:
+      - path: /jaeger
+        pathType: Prefix
+        backend:
+          service:
+            name: jaeger-query
+            port:
+              number: 80
