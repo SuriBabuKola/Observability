@@ -984,3 +984,159 @@
   2. Provide an **Index Pattern** (matches logs from Fluentbit/Elasticsearch).
   3. Save and explore logs.
   ![preview](./Images/Observability10.png)
+
+---
+
+## Distributed Tracing with Jaeger
+### Jaeger
+* **Jaeger** is an open-source, **end-to-end distributed tracing system** used to monitor and troubleshoot **microservices-based architectures**.
+* It helps visualize how a request travels across multiple services and how long each part of the process takes.
+#### Use Jaeger
+* In microservices-based systems, a single request can pass through multiple services. Tracing each step is crucial for identifying issues. Jaeger helps to:
+  * **Identify Bottlenecks** — Find which service or operation is causing latency.
+  * **Find Root Causes of Errors** — Trace an error back through dependent services to the origin.
+  * **Optimize Performance** — Understand latency distribution and improve service response times.
+#### Core Concepts in Jaeger
+* **Trace:** Represents the *entire journey* of a single request as it travels through multiple microservices.
+* **Span:** A *single unit of work* within a trace (e.g., a database call, API request, or function execution). Each span has start time, duration, and metadata.
+* **Tags:** Key-value pairs attached to spans to add more context (e.g., HTTP method, status code).
+* **Logs:** Events recorded within a span, capturing specific actions or errors.
+* **Context Propagation:** Mechanism that passes trace context across service boundaries, allowing the full trace to be reconstructed across distributed systems.
+#### Working of Jaeger
+* Jaeger’s architecture includes four major components:
+  1. **Agent:** Receives trace data from instrumented applications and forwards them to the collector.
+  2. **Collector:** Gathers trace data from the agent, processes it, and sends it to storage.
+  3. **Storage:** Stores the processed traces (commonly uses **Elasticsearch**).
+  4. **Query / UI:** Provides a web interface to search, view, and analyze traces.
+  > Jaeger doesn’t come with its own database. In this project, **Elasticsearch** is used as its storage backend.
+
+### Tracing Instrumentation
+#### Instrumentation
+* **Instrumentation** means adding code or libraries to your application to record trace data.
+* Developers use **OpenTelemetry** — a **vendor-neutral standard** for generating and exporting telemetry data like traces, metrics, and logs.
+* OpenTelemetry integrates easily with Jaeger to export traces.
+#### Implementation Example
+* In our project, the **Node.js microservices** (`service-a` and `service-b`) are instrumented using OpenTelemetry libraries.
+  * [Refer Here](https://github.com/SuriBabuKola/Observability/blob/main/Examples/Project-1/Application/service-a/tracing.js) for the tracing logic implemented in `service-a`.
+  * [Refer Here](https://github.com/SuriBabuKola/Observability/blob/main/Examples/Project-1/Application/service-b/tracing.js) for the tracing logic implemented in `service-b`.
+
+### Steps to Deploy Jaeger in Kubernetes
+#### Step:1 `Install ElasticSearch in Kubernetes Cluster`
+1. **Create IAM Role for Service Account:**
+    ```sh
+    eksctl create iamserviceaccount \
+        --name ebs-csi-controller-sa \
+        --namespace kube-system \
+        --cluster observability \
+        --role-name AmazonEKS_EBS_CSI_DriverRole \
+        --role-only \
+        --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy \
+        --approve
+    ```
+2. **Retrieve IAM Role ARN:**
+    ```sh
+    ARN=$(aws iam get-role --role-name AmazonEKS_EBS_CSI_DriverRole --query 'Role.Arn' --output text)
+    ```
+3. **Deploy AWS EBS CSI Driver:**
+    ```sh
+    eksctl create addon --cluster observability --name aws-ebs-csi-driver --version latest \
+        --service-account-role-arn $ARN --force
+    ```
+4. **Create Namespace for Logging:**
+    ```sh
+    kubectl create namespace logging
+    ```
+5. **Install Elasticsearch using Helm:**
+    ```sh
+    helm repo add elastic https://helm.elastic.co
+    helm install elasticsearch \
+      --set replicas=1 \
+      --set volumeClaimTemplate.storageClassName=gp2 \
+      --set persistence.labels.enabled=true elastic/elasticsearch -n logging
+    ```
+6. **Retrieve Elasticsearch Credentials:**
+    * Save the username and password of Elasticsearch, which are needed to configure in the Jaeger configuration.
+      ```sh
+      # Username
+      kubectl get secrets --namespace=logging elasticsearch-master-credentials -ojsonpath='{.data.username}' | base64 -d
+      # Password
+      kubectl get secrets --namespace=logging elasticsearch-master-credentials -ojsonpath='{.data.password}' | base64 -d
+      ```
+#### Step:2 `Export Elasticsearch CA Certificate`
+* Extract the certificate from the existing Elasticsearch deployment to enable secure communication with Jaeger.
+  ```bash
+  kubectl get secret elasticsearch-master-certs -n logging -o jsonpath='{.data.ca\.crt}' | base64 --decode > ca-cert.pem
+  ```
+#### Step:3 `Create Namespace for Jaeger`
+* Create a dedicated namespace for tracing components.
+  ```bash
+  kubectl create ns tracing
+  ```
+#### Step:4 `Create ConfigMap for Jaeger TLS Certificate`
+* Store the Elasticsearch CA certificate as a ConfigMap.
+  ```bash
+  kubectl create configmap jaeger-tls --from-file=ca-cert.pem -n tracing
+  ```
+#### Step:5 `Create Secret for Elasticsearch TLS`
+* Create a Secret that Jaeger will use to securely communicate with Elasticsearch.
+  ```bash
+  kubectl create secret generic es-tls-secret --from-file=ca-cert.pem -n tracing
+  ```
+#### Step:6 `Add Jaeger Helm Repository`
+* Add the official Jaeger Helm chart repo.
+  ```bash
+  helm repo add jaegertracing https://jaegertracing.github.io/helm-charts
+  helm repo update
+  ```
+#### Step:7 `Install Jaeger with Custom Values`
+* [Refer Here](https://github.com/SuriBabuKola/Observability/commit/9abae09a4aa42176a8c559246069ba14d16d34d3) for the **`jaeger-values.yaml`** file. Update the **`jaeger-values.yaml`** file before installation.
+  * Add **Elasticsearch username**, **password**, and **CA certificate details** in the storage configuration section.
+  * Modify sections for **storage**, **query**, and **collector** as needed.
+    ```bash
+    helm install jaeger jaegertracing/jaeger -n tracing --values jaeger-values.yaml
+    ```
+    > Ensure the password matches the one retrieved earlier when installing Elasticsearch.
+#### Step:8 `Access Jaeger UI (Port Forward)`
+* Expose the Jaeger UI locally via port-forwarding:
+  ```bash
+  kubectl port-forward svc/jaeger-query 8080:80 -n tracing
+  ```
+* Now open Jaeger UI in your browser.
+  ![preview](./Images/Observability11.png)
+#### Step:9 `Set Up Ingress for Jaeger`
+* Create a separate Ingress resource for Jaeger since it resides in the `tracing` namespace.
+  * [Refer Here](https://github.com/SuriBabuKola/Observability/commit/95c0ba97ee6d4cb6d540b706e77a3b97ed55068e) for the Ingress resource manifest file.
+  * Apply the Ingress manifest using the command: `kubectl apply -f tracing-ingress.yaml`.
+* Update the **`jaeger-values.yaml`** file to configure access via the Ingress path.
+  * [Refer Here](https://github.com/SuriBabuKola/Observability/commit/32ab4a9e1de74730098328862016000f603b9a1c?diff=split) for the updated **`jaeger-values.yaml`** file.
+  * Upgrade the Helm release with the updated values: `helm upgrade jaeger jaegertracing/jaeger -n tracing -f jaeger-values.yaml`.
+  ![preview](./Images/Observability14.png)
+
+### Testing Jaeger Tracing
+#### Step:1 `Deploy Application`
+* Deploy the previously instrumented application (used for Metrics and Logging) in Kubernetes.
+* [Refer Here](https://github.com/SuriBabuKola/Observability?tab=readme-ov-file#step2-deploy-application) for the deployment process of Application.
+#### Step:2 `Generate Traces`
+* Access the LoadBalancer DNS of the application and hit multiple endpoints to generate traffic and traces.
+#### Step:3 `View in Jaeger UI`
+* Open the Jaeger UI.
+* Select your service (e.g., `service-a` or `service-b`).
+* Click **Find Traces**.
+* You’ll see multiple traces; select one to explore details.
+* Each **span** represents a single operation in the trace.
+* Click on spans to view:
+  * Service name
+  * Duration
+  * Tags (like HTTP status, latency, method)
+  * Logs (errors, checkpoints)
+    > Hitting other service endpoints automatically adds new traces to Jaeger.
+
+    ![preview](./Images/Observability12.png)
+    ![preview](./Images/Observability13.png)
+
+### Jaeger Workflow
+1. Developer instruments application using **OpenTelemetry**.
+2. Application sends trace data to **Jaeger Agent**.
+3. Agent forwards data to **Collector**.
+4. Collector stores data in **Elasticsearch**.
+5. **Jaeger UI** queries Elasticsearch and displays trace visualizations.
