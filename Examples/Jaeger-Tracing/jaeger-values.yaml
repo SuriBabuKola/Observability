@@ -15,6 +15,7 @@ provisionDataStore:
   elasticsearch: false
 
 query:
+  basePath: /jaeger       # If using Ingress, set the basePath
   cmdlineParams:
     es.tls.ca: "/tls/ca-cert.pem"
   extraConfigmapMounts:
